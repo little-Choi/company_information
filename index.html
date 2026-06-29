@@ -211,7 +211,7 @@
 
     .trend-chart {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
       align-items: end;
       gap: 18px;
       min-height: 230px;
@@ -404,9 +404,21 @@
       border-radius: 8px;
     }
 
+    .table-controls {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      min-width: min(100%, 460px);
+    }
+
+    .table-controls .search {
+      flex: 1;
+      min-width: 220px;
+    }
+
     table {
       width: 100%;
-      min-width: 860px;
+      min-width: 960px;
       border-collapse: collapse;
       font-size: 13px;
     }
@@ -503,6 +515,16 @@
         width: 100%;
       }
 
+      .table-controls {
+        width: 100%;
+        min-width: 0;
+        flex-direction: column;
+      }
+
+      .table-controls .search {
+        min-width: 0;
+      }
+
       .trend-chart {
         gap: 10px;
       }
@@ -562,13 +584,17 @@
             <h2 id="statementTitle">재무상태표</h2>
             <p id="statementMeta"></p>
           </div>
-          <input class="search" id="searchInput" type="search" placeholder="계정명 또는 ID 검색" aria-label="계정 검색">
+          <div class="table-controls">
+            <select id="yearSelect" aria-label="사업연도 선택"></select>
+            <input class="search" id="searchInput" type="search" placeholder="계정명 또는 ID 검색" aria-label="계정 검색">
+          </div>
         </div>
         <div class="statement-chart" id="statementChart"></div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
+                <th>사업연도</th>
                 <th>계정명</th>
                 <th>당기</th>
                 <th>전기</th>
@@ -589,8 +615,10 @@
     const DATA_SOURCES = [
       {
         company: "삼성전자",
-        label: "삼성전자 · 2025 · 연간 · 연결",
-        file: "dart_output/samsung_electronics_2025_annual_CFS.json"
+        label: "삼성전자 · 전체 연도 · 연간 · 연결",
+        year: "all_years",
+        allYears: true,
+        file: "dart_output/samsung_electronics_all_years_annual_CFS.json"
       }
     ];
 
@@ -619,12 +647,12 @@
     };
 
     const metricDefs = [
-      { id: "assets", label: "자산총계", accountIds: ["ifrs-full_Assets"], names: ["자산총계"], accent: "teal" },
-      { id: "liabilities", label: "부채총계", accountIds: ["ifrs-full_Liabilities"], names: ["부채총계"], accent: "amber" },
-      { id: "equity", label: "자본총계", accountIds: ["ifrs-full_Equity"], names: ["자본총계"], accent: "green" },
-      { id: "revenue", label: "매출액", accountIds: ["ifrs-full_Revenue"], names: ["매출액"], accent: "violet" },
-      { id: "operatingIncome", label: "영업이익", accountIds: ["dart_OperatingIncomeLoss"], names: ["영업이익"], accent: "teal" },
-      { id: "profit", label: "당기순이익", accountIds: ["ifrs-full_ProfitLoss"], names: ["당기순이익"], accent: "green" }
+      { id: "assets", label: "자산총계", accountIds: ["ifrs-full_Assets", "ifrs_Assets"], names: ["자산총계"], accent: "teal" },
+      { id: "liabilities", label: "부채총계", accountIds: ["ifrs-full_Liabilities", "ifrs_Liabilities"], names: ["부채총계"], accent: "amber" },
+      { id: "equity", label: "자본총계", accountIds: ["ifrs-full_Equity", "ifrs_Equity"], names: ["자본총계"], accent: "green" },
+      { id: "revenue", label: "매출액", accountIds: ["ifrs-full_Revenue", "ifrs_Revenue"], names: ["매출액", "수익(매출액)", "영업수익"], accent: "violet" },
+      { id: "operatingIncome", label: "영업이익", accountIds: ["dart_OperatingIncomeLoss"], names: ["영업이익", "영업이익(손실)"], accent: "teal" },
+      { id: "profit", label: "당기순이익", accountIds: ["ifrs-full_ProfitLoss", "ifrs_ProfitLoss"], names: ["당기순이익", "당기순이익(손실)"], accent: "green" }
     ];
 
     const state = {
@@ -633,6 +661,7 @@
       currentSource: null,
       selectedStatement: "BS",
       selectedMetric: "revenue",
+      selectedYear: "all",
       query: ""
     };
 
@@ -649,6 +678,7 @@
       facts: document.getElementById("facts"),
       statementTitle: document.getElementById("statementTitle"),
       statementMeta: document.getElementById("statementMeta"),
+      yearSelect: document.getElementById("yearSelect"),
       statementChart: document.getElementById("statementChart"),
       searchInput: document.getElementById("searchInput"),
       tableBody: document.getElementById("tableBody")
@@ -673,7 +703,7 @@
     function inferDataSource(file) {
       const filename = file.split("/").pop() || file;
       const base = filename.replace(/\.(json|csv)$/i, "");
-      const match = base.match(/^(.+?)_(\d{4})_([^_]+)_([A-Z]+)$/);
+      const match = base.match(/^(.+?)_((?:\d{4})|all_years)_([^_]+)_([A-Z]+)$/);
 
       if (!match) {
         return {
@@ -687,12 +717,15 @@
       const company = COMPANY_LABELS[companyKey] || titleCase(companyKey);
       const report = REPORT_LABELS[reportCode] || reportCode;
       const fs = FS_LABELS[fsDiv] || fsDiv;
+      const allYears = year === "all_years";
+      const yearLabel = allYears ? "전체 연도" : year;
       return {
         company,
         year,
+        allYears,
         report,
         fs,
-        label: `${company} · ${year} · ${report} · ${fs}`,
+        label: `${company} · ${yearLabel} · ${report} · ${fs}`,
         file
       };
     }
@@ -744,6 +777,88 @@
       return ((current - previous) / Math.abs(previous)) * 100;
     }
 
+    function rowYear(row) {
+      const year = Number(row.bsns_year);
+      return Number.isFinite(year) ? year : null;
+    }
+
+    function availableYears() {
+      return Array.from(new Set(state.rows.map(rowYear).filter(Boolean)))
+        .sort((a, b) => b - a);
+    }
+
+    function yearSummary() {
+      const years = availableYears();
+      if (!years.length) return "-";
+      if (years.length === 1) return String(years[0]);
+      return `${years[years.length - 1]}-${years[0]}`;
+    }
+
+    function rowsForSelectedYear(rows = state.rows) {
+      if (state.selectedYear === "all") return rows;
+      return rows.filter((row) => String(row.bsns_year) === state.selectedYear);
+    }
+
+    function metricMatches(row, def) {
+      return def.accountIds.includes(row.account_id) || def.names.includes(row.account_nm);
+    }
+
+    function metricRank(row, def) {
+      if (def.accountIds.includes(row.account_id)) return 0;
+      if (def.names.includes(row.account_nm)) return 1;
+      return 2;
+    }
+
+    function getMetricPoints(def) {
+      const byYear = new Map();
+
+      for (const row of state.rows.filter((item) => metricMatches(item, def))) {
+        const year = rowYear(row);
+        if (!year) continue;
+        const current = byYear.get(year);
+        if (
+          !current
+          || metricRank(row, def) < metricRank(current, def)
+          || (metricRank(row, def) === metricRank(current, def) && row.ord < current.ord)
+        ) {
+          byYear.set(year, row);
+        }
+      }
+
+      return Array.from(byYear.entries())
+        .sort(([a], [b]) => a - b)
+        .map(([year, row]) => ({
+          label: String(year),
+          value: parseAmount(row.thstrm_amount),
+          row
+        }))
+        .filter((point) => Number.isFinite(point.value));
+    }
+
+    function getMetricValues(def) {
+      const points = getMetricPoints(def);
+      if (points.length >= 2) {
+        const current = points[points.length - 1];
+        const previous = points[points.length - 2];
+        return {
+          current: current.value,
+          previous: previous.value,
+          currentLabel: current.label,
+          previousLabel: previous.label,
+          row: current.row
+        };
+      }
+
+      const row = state.rows.find((item) => metricMatches(item, def));
+      return {
+        current: row ? parseAmount(row.thstrm_amount) : null,
+        previous: row ? parseAmount(row.frmtrm_amount) : null,
+        currentLabel: row ? String(row.bsns_year || "당기") : "당기",
+        previousLabel: row ? "전기" : "전기",
+        row
+      };
+    }
+
     function normalizeRows(rows) {
       return rows
         .filter((row) => row && row.account_nm)
@@ -756,7 +871,10 @@
           account_nm: String(row.account_nm || "").trim(),
           currency: String(row.currency || "KRW").trim()
         }))
-        .sort((a, b) => a.sj_div.localeCompare(b.sj_div) || a.ord - b.ord);
+        .sort((a, b) => {
+          const yearDiff = (rowYear(b) || 0) - (rowYear(a) || 0);
+          return yearDiff || a.sj_div.localeCompare(b.sj_div) || a.ord - b.ord;
+        });
     }
 
     function parseCsv(text) {
@@ -799,8 +917,7 @@
     }
 
     function findMetric(def) {
-      return state.rows.find((row) => def.accountIds.includes(row.account_id))
-        || state.rows.find((row) => def.names.includes(row.account_nm));
+      return getMetricValues(def).row;
     }
 
     function getPeriods(row) {
@@ -838,6 +955,28 @@
           : "";
         return `<option value="${index}"${selected}>${escapeHtml(source.label)}</option>`;
       }).join("");
+    }
+
+    function renderYearSelect() {
+      const years = availableYears();
+      if (!years.length) {
+        els.yearSelect.innerHTML = `<option value="all">전체 연도</option>`;
+        els.yearSelect.disabled = true;
+        return;
+      }
+
+      els.yearSelect.disabled = false;
+      if (state.selectedYear !== "all" && !years.includes(Number(state.selectedYear))) {
+        state.selectedYear = "all";
+      }
+
+      const options = [
+        `<option value="all"${state.selectedYear === "all" ? " selected" : ""}>전체 연도</option>`,
+        ...years.map((year) => (
+          `<option value="${year}"${String(year) === state.selectedYear ? " selected" : ""}>${year}</option>`
+        ))
+      ];
+      els.yearSelect.innerHTML = options.join("");
     }
 
     async function discoverDataSources() {
@@ -883,16 +1022,19 @@
 
     function renderMetrics() {
       els.metrics.innerHTML = metricDefs.map((metric) => {
-        const row = findMetric(metric);
-        const current = row ? parseAmount(row.thstrm_amount) : null;
-        const previous = row ? parseAmount(row.frmtrm_amount) : null;
+        const values = getMetricValues(metric);
+        const current = values.current;
+        const previous = values.previous;
         const rate = changeRate(current, previous);
         const direction = rate === null ? "" : rate >= 0 ? "up" : "down";
+        const compareLabel = values.previousLabel && values.currentLabel
+          ? `${values.previousLabel} 대비`
+          : "전기 대비";
         return `
           <article class="metric-card">
             <h3>${metric.label}</h3>
             <div class="metric-value">${formatAmount(current)}</div>
-            <div class="metric-change ${direction}">전기 대비 ${formatPercent(rate)}</div>
+            <div class="metric-change ${direction}">${compareLabel} ${formatPercent(rate)}</div>
           </article>
         `;
       }).join("");
@@ -900,15 +1042,19 @@
 
     function renderTrendChart() {
       const metric = metricDefs.find((item) => item.id === state.selectedMetric) || metricDefs[0];
-      const row = findMetric(metric);
+      const points = getMetricPoints(metric);
+      const row = points.length ? points[points.length - 1].row : findMetric(metric);
       if (!row) {
         els.trendChart.innerHTML = `<div class="empty">선택한 지표 데이터가 없습니다.</div>`;
         return;
       }
 
-      const periods = getPeriods(row);
+      const periods = points.length >= 2 ? points : getPeriods(row);
       const max = Math.max(...periods.map((period) => Math.abs(period.value || 0)), 1);
-      els.trendMeta.textContent = `${metric.label} · ${row.currency || "KRW"}`;
+      const periodLabel = points.length >= 2
+        ? `${points[0].label}-${points[points.length - 1].label}`
+        : "최근 3개 기수";
+      els.trendMeta.textContent = `${metric.label} · ${periodLabel} · ${row.currency || "KRW"}`;
       els.trendChart.innerHTML = periods.map((period) => {
         const height = Math.max(3, Math.round((Math.abs(period.value || 0) / max) * 100));
         return `
@@ -924,7 +1070,7 @@
     }
 
     function statementCounts() {
-      return state.rows.reduce((acc, row) => {
+      return rowsForSelectedYear().reduce((acc, row) => {
         acc[row.sj_div] = (acc[row.sj_div] || 0) + 1;
         return acc;
       }, {});
@@ -947,23 +1093,28 @@
 
     function filteredRows() {
       const query = state.query.trim().toLowerCase();
-      return state.rows
+      return rowsForSelectedYear()
         .filter((row) => row.sj_div === state.selectedStatement)
         .filter((row) => {
           if (!query) return true;
           return `${row.account_nm} ${row.account_id}`.toLowerCase().includes(query);
         })
-        .sort((a, b) => a.ord - b.ord);
+        .sort((a, b) => {
+          const yearDiff = (rowYear(b) || 0) - (rowYear(a) || 0);
+          return yearDiff || a.ord - b.ord;
+        });
     }
 
     function renderFacts() {
-      const first = state.rows[0] || {};
+      const activeRows = rowsForSelectedYear();
+      const first = activeRows[0] || state.rows[0] || {};
       const counts = statementCounts();
-      const total = state.rows.length;
+      const total = activeRows.length;
       const source = state.currentSource || {};
+      const years = state.selectedYear === "all" ? yearSummary() : state.selectedYear;
       els.facts.innerHTML = `
         <div class="fact-row"><span>기업</span><strong>${source.company || "-"}</strong></div>
-        <div class="fact-row"><span>사업연도</span><strong>${first.bsns_year || "-"}</strong></div>
+        <div class="fact-row"><span>사업연도</span><strong>${years || first.bsns_year || "-"}</strong></div>
         <div class="fact-row"><span>보고서</span><strong>${first.reprt_code || "-"}</strong></div>
         <div class="fact-row"><span>접수번호</span><strong>${first.rcept_no || "-"}</strong></div>
         <div class="fact-row"><span>통화</span><strong>${first.currency || "KRW"}</strong></div>
@@ -989,9 +1140,12 @@
       els.statementChart.innerHTML = candidates.map(({ row, amount }) => {
         const width = Math.max(2, Math.round((Math.abs(amount) / max) * 50));
         const direction = amount >= 0 ? "pos" : "neg";
+        const label = state.selectedYear === "all"
+          ? `${row.bsns_year} · ${row.account_nm}`
+          : row.account_nm;
         return `
           <div class="bar-row">
-            <div class="bar-label" title="${row.account_nm}">${row.account_nm}</div>
+            <div class="bar-label" title="${label}">${label}</div>
             <div class="bar-track">
               <div class="bar-fill ${direction}" style="width:${width}%"></div>
             </div>
@@ -1003,7 +1157,7 @@
 
     function renderTable(rows) {
       if (!rows.length) {
-        els.tableBody.innerHTML = `<tr><td colspan="6"><div class="empty">일치하는 계정이 없습니다.</div></td></tr>`;
+        els.tableBody.innerHTML = `<tr><td colspan="7"><div class="empty">일치하는 계정이 없습니다.</div></td></tr>`;
         return;
       }
 
@@ -1013,6 +1167,7 @@
         const beforePrevious = parseAmount(row.bfefrmtrm_amount);
         return `
           <tr>
+            <td>${row.bsns_year || "-"}</td>
             <td>${row.account_nm}</td>
             <td class="amount">${formatAmount(current)}</td>
             <td class="amount">${formatAmount(previous)}</td>
@@ -1026,7 +1181,7 @@
 
     function renderStatement() {
       const rows = filteredRows();
-      const sourceRows = state.rows.filter((row) => row.sj_div === state.selectedStatement);
+      const sourceRows = rowsForSelectedYear().filter((row) => row.sj_div === state.selectedStatement);
       const title = statementLabels[state.selectedStatement] || state.selectedStatement;
       els.statementTitle.textContent = title;
       els.statementMeta.textContent = `${sourceRows.length.toLocaleString("ko-KR")}개 항목 · ${rows.length.toLocaleString("ko-KR")}개 표시`;
@@ -1041,11 +1196,14 @@
         els.trendChart.innerHTML = `<div class="empty">데이터가 없습니다.</div>`;
         els.statementTabs.innerHTML = "";
         els.statementChart.innerHTML = "";
+        els.yearSelect.innerHTML = `<option value="all">전체 연도</option>`;
+        els.yearSelect.disabled = true;
         els.tableBody.innerHTML = "";
         return;
       }
 
       renderMetricOptions();
+      renderYearSelect();
       renderMetrics();
       renderTrendChart();
       renderTabs();
@@ -1056,6 +1214,7 @@
       state.currentSource = source;
       state.rows = normalizeRows(rows);
       state.query = "";
+      state.selectedYear = "all";
       els.searchInput.value = "";
       renderHeader();
       renderCompanySelect();
@@ -1124,6 +1283,12 @@
 
     els.searchInput.addEventListener("input", (event) => {
       state.query = event.target.value;
+      renderStatement();
+    });
+
+    els.yearSelect.addEventListener("change", (event) => {
+      state.selectedYear = event.target.value;
+      renderTabs();
       renderStatement();
     });
 

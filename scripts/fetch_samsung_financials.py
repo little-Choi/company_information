@@ -3,6 +3,7 @@
 Usage:
     # Option 1: put your key in OPEN_DART_API_KEY below, then run:
     python scripts/fetch_samsung_financials.py --year 2025
+    python scripts/fetch_samsung_financials.py --all-years
 
     # Option 2: use an environment variable instead:
     $env:OPEN_DART_API_KEY = "your_40_char_key"  # PowerShell
@@ -26,6 +27,7 @@ from urllib.request import urlopen
 
 API_URL = "https://opendart.fss.or.kr/api/fnlttSinglAcntAll.json"
 SAMSUNG_ELECTRONICS_CORP_CODE = "00126380"
+DEFAULT_START_YEAR = 2015
 
 # You can paste your OpenDART API key here for local use.
 # Do not commit a real API key to a shared or public repository.
@@ -65,6 +67,10 @@ DART_FIELDS = [
 
 class OpenDartError(RuntimeError):
     """Raised when OpenDART returns an error response."""
+
+    def __init__(self, message: str, status: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def read_windows_environment_variable(name: str) -> Optional[str]:
@@ -133,7 +139,7 @@ def fetch_financial_statement(
     status = payload.get("status")
     if status != "000":
         message = payload.get("message", "unknown error")
-        raise OpenDartError(f"OpenDART error {status}: {message}")
+        raise OpenDartError(f"OpenDART error {status}: {message}", status=status)
 
     rows = payload.get("list", [])
     if not isinstance(rows, list):
@@ -163,6 +169,32 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def resolve_years(args: argparse.Namespace, parser: argparse.ArgumentParser) -> list[int]:
+    default_year = date.today().year - 1
+
+    if args.all_years:
+        if args.year is not None:
+            parser.error("--year cannot be used with --all-years. Use --start-year/--end-year.")
+        if args.start_year > args.end_year:
+            parser.error("--start-year must be less than or equal to --end-year.")
+        return list(range(args.start_year, args.end_year + 1))
+
+    if args.start_year != DEFAULT_START_YEAR or args.end_year != default_year:
+        parser.error("--start-year/--end-year can only be used with --all-years.")
+
+    return [args.year if args.year is not None else default_year]
+
+
+def build_base_name(args: argparse.Namespace, years: list[int]) -> str:
+    year_part = "all_years" if args.all_years else str(years[0])
+    base_name = (
+        f"samsung_electronics_{year_part}_{REPORT_CODES[args.report_code]}_{args.fs_div}"
+    )
+    if args.statement:
+        base_name += f"_{args.statement}"
+    return base_name
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Fetch Samsung Electronics financial statements from OpenDART."
@@ -175,8 +207,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--year",
         type=int,
-        default=date.today().year - 1,
+        default=None,
         help="Business year to request. Defaults to last calendar year.",
+    )
+    parser.add_argument(
+        "--all-years",
+        action="store_true",
+        help="Fetch every business year in the requested range.",
+    )
+    parser.add_argument(
+        "--start-year",
+        type=int,
+        default=DEFAULT_START_YEAR,
+        help=f"First business year for --all-years. Defaults to {DEFAULT_START_YEAR}.",
+    )
+    parser.add_argument(
+        "--end-year",
+        type=int,
+        default=date.today().year - 1,
+        help="Last business year for --all-years. Defaults to last calendar year.",
     )
     parser.add_argument(
         "--report-code",
@@ -207,7 +256,9 @@ def parse_args() -> argparse.Namespace:
         default="both",
         help="Output format.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.years = resolve_years(args, parser)
+    return args
 
 
 def main() -> None:
@@ -219,20 +270,33 @@ def main() -> None:
             "environment variable, or pass --api-key."
         )
 
-    rows = fetch_financial_statement(
-        api_key=api_key,
-        year=args.year,
-        report_code=args.report_code,
-        fs_div=args.fs_div,
-    )
-    rows = filter_statement(rows, args.statement)
+    rows: list[dict[str, Any]] = []
+    skipped_years: list[int] = []
+    for year in args.years:
+        try:
+            year_rows = fetch_financial_statement(
+                api_key=api_key,
+                year=year,
+                report_code=args.report_code,
+                fs_div=args.fs_div,
+            )
+        except OpenDartError as exc:
+            if args.all_years and exc.status == "013":
+                skipped_years.append(year)
+                continue
+            raise
+
+        year_rows = filter_statement(year_rows, args.statement)
+        if args.all_years and not year_rows:
+            skipped_years.append(year)
+            continue
+        rows.extend(year_rows)
+
+    if not rows:
+        raise SystemExit("No financial statement rows were fetched.")
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    base_name = (
-        f"samsung_electronics_{args.year}_{REPORT_CODES[args.report_code]}_{args.fs_div}"
-    )
-    if args.statement:
-        base_name += f"_{args.statement}"
+    base_name = build_base_name(args, args.years)
 
     written: list[Path] = []
     if args.format in ("json", "both"):
@@ -244,7 +308,13 @@ def main() -> None:
         write_csv(path, rows)
         written.append(path)
 
-    print(f"Fetched {len(rows)} rows.")
+    year_label = (
+        f"{args.years[0]}-{args.years[-1]}" if args.all_years else str(args.years[0])
+    )
+    print(f"Fetched {len(rows)} rows for {year_label}.")
+    if skipped_years:
+        skipped = ", ".join(str(year) for year in skipped_years)
+        print(f"Skipped years with no rows: {skipped}")
     for path in written:
         print(f"Wrote {path}")
 
